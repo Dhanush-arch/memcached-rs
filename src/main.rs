@@ -1,5 +1,27 @@
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
-fn main() {
+use std::{
+    collections::HashMap,
+    io::{BufRead, BufReader, BufWriter, Write},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
+};
+#[derive(Debug)]
+enum Command<'a> {
+    Set(SetCommand<'a>),
+    Get(GetCommand<'a>),
+}
+#[derive(Debug)]
+struct SetCommand<'a> {
+    key: &'a str,
+    flags: u16,
+    byte_count: u128,
+    no_reply: bool,
+    data_block: &'a str,
+}
+#[derive(Debug)]
+struct GetCommand<'a> {
+    key: &'a str,
+}
+
+fn start_server() -> Option<std::net::TcpStream> {
     let mut port = 11211;
     let args: Vec<String> = std::env::args().collect();
 
@@ -16,8 +38,109 @@ fn main() {
     let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port));
 
     let listerner = TcpListener::bind(addr).unwrap();
+
     match listerner.accept() {
-        Ok((_sockter, socketAddr)) => println!("Connected: {}", _sockter.local_addr().unwrap()),
-        Err(_) => println!("Couldn't connect"),
+        Ok((sock_stream, _)) => {
+            println!("Connected: {}", sock_stream.local_addr().unwrap());
+            Some(sock_stream)
+        }
+        Err(_) => {
+            println!("Couldn't connect");
+            None
+        }
+    }
+}
+
+fn handle_connection(
+    sock_stream: TcpStream,
+    data_storage: &mut HashMap<String, (String, u16, u128)>,
+) {
+    let mut command = String::new();
+    let mut buf_reader = BufReader::new(&sock_stream);
+    let mut buf_writer = BufWriter::new(&sock_stream);
+
+    loop {
+        command.clear();
+        match buf_reader.read_line(&mut command) {
+            Ok(_) => {
+                let command_vec: Vec<_> = command.trim().split_ascii_whitespace().collect();
+                let processed_command = parse_command(command_vec).unwrap();
+                match processed_command {
+                    Command::Get(get_command) => match data_storage.get(get_command.key) {
+                        Some(data) => {
+                            buf_writer
+                                .write_fmt(format_args!(
+                                    "VALUE {} {} {}\r\n",
+                                    data.0, data.1, data.2
+                                ))
+                                .unwrap();
+                            buf_writer.flush().unwrap();
+                        }
+                        None => {
+                            buf_writer.write("END\r\n".as_bytes()).unwrap();
+                            buf_writer.flush().unwrap();
+                        }
+                    },
+                    Command::Set(mut set_command) => {
+                        let mut data = String::new();
+                        buf_reader.read_line(&mut data).unwrap();
+                        set_command.data_block = data.as_str().trim();
+                        data_storage.insert(
+                            set_command.key.to_string(),
+                            (
+                                set_command.data_block.to_string(),
+                                set_command.flags,
+                                set_command.byte_count,
+                            ),
+                        );
+                        if set_command.no_reply == false {
+                            buf_writer.write_all("STORED\r\n".as_bytes()).unwrap();
+                            buf_writer.flush().unwrap();
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+fn parse_command(command_string: Vec<&str>) -> Option<Command> {
+    match command_string.get(0) {
+        Some(str) => {
+            if str.eq_ignore_ascii_case("set") {
+                let sc = SetCommand {
+                    key: command_string.get(1).unwrap(),
+                    flags: command_string.get(2).unwrap().parse::<u16>().unwrap(),
+                    byte_count: command_string.get(3).unwrap().parse::<u128>().unwrap(),
+                    no_reply: match command_string.get(4) {
+                        Some(str) => {
+                            if str.eq_ignore_ascii_case("noreply") {
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        None => false,
+                    },
+                    data_block: "",
+                };
+                return Some(Command::Set(sc));
+            }
+            let gc = GetCommand {
+                key: command_string.get(1).unwrap(),
+            };
+            return Some(Command::Get(gc));
+        }
+        None => None,
+    }
+}
+fn main() {
+    let mut data_storage: HashMap<String, (String, u16, u128)> = HashMap::new();
+    match start_server() {
+        Some(sock_stream) => {
+            handle_connection(sock_stream, &mut data_storage);
+        }
+        _ => (),
     }
 }
