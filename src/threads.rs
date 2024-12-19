@@ -44,7 +44,7 @@ impl ThreadPool {
 }
 
 struct Worker {
-    #[warn(dead_code)]
+    #[allow(dead_code)]
     id: usize,
     thread: JoinHandle<Job>,
 }

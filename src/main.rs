@@ -3,6 +3,7 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Write},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
     sync::{Arc, Mutex},
+    time::SystemTime,
 };
 
 pub mod threads;
@@ -19,12 +20,53 @@ struct SetCommand<'a> {
     key: &'a str,
     flags: u16,
     byte_count: u128,
+    expiry_date: i128,
     no_reply: bool,
     data_block: &'a str,
 }
 #[derive(Debug)]
 struct GetCommand<'a> {
     key: &'a str,
+}
+
+struct Data {
+    flags: u16,
+    byte_count: u128,
+    data_block: String,
+    inserted_time: SystemTime,
+    expiry_sec: i128,
+}
+
+impl Data {
+    fn new(flags: u16, byte_count: u128, data_block: String, expiry_sec: i128) -> Data {
+        Data {
+            flags,
+            byte_count,
+            data_block,
+            inserted_time: SystemTime::now(),
+            expiry_sec,
+        }
+    }
+}
+
+struct DataStorage {
+    store: HashMap<String, Data>,
+}
+
+impl DataStorage {
+    fn new() -> DataStorage {
+        DataStorage {
+            store: HashMap::new(),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&Data> {
+        return self.store.get(key);
+    }
+
+    fn insert(&mut self, key: String, data: Data) -> Option<Data> {
+        self.store.insert(key, data)
+    }
 }
 
 fn start_server() -> TcpListener {
@@ -48,10 +90,7 @@ fn start_server() -> TcpListener {
     return listerner;
 }
 
-fn handle_connection(
-    sock_stream: TcpStream,
-    data_storage: Arc<Mutex<HashMap<String, (String, u16, u128)>>>,
-) {
+fn handle_connection(sock_stream: TcpStream, data_storage: Arc<Mutex<DataStorage>>) {
     let mut command = String::new();
     let mut buf_reader = BufReader::new(&sock_stream);
     let mut buf_writer = BufWriter::new(&sock_stream);
@@ -73,7 +112,7 @@ fn handle_connection(
                                 buf_writer
                                     .write_fmt(format_args!(
                                         "VALUE {} {} {}\r\n",
-                                        data.0, data.1, data.2
+                                        data.data_block, data.flags, data.byte_count
                                     ))
                                     .unwrap();
                                 buf_writer.flush().unwrap();
@@ -90,10 +129,11 @@ fn handle_connection(
                         set_command.data_block = data.as_str().trim();
                         data_storage.lock().unwrap().insert(
                             set_command.key.to_string(),
-                            (
-                                set_command.data_block.to_string(),
+                            Data::new(
                                 set_command.flags,
                                 set_command.byte_count,
+                                set_command.data_block.to_string(),
+                                set_command.expiry_date,
                             ),
                         );
                         if set_command.no_reply == false {
@@ -116,7 +156,8 @@ fn parse_command(command_string: Vec<&str>) -> Option<Command> {
                     key: command_string.get(1).unwrap(),
                     flags: command_string.get(2).unwrap().parse::<u16>().unwrap(),
                     byte_count: command_string.get(3).unwrap().parse::<u128>().unwrap(),
-                    no_reply: match command_string.get(4) {
+                    expiry_date: command_string.get(4).unwrap().parse::<i128>().unwrap(),
+                    no_reply: match command_string.get(5) {
                         Some(str) => {
                             if str.eq_ignore_ascii_case("noreply") {
                                 true
@@ -141,8 +182,7 @@ fn parse_command(command_string: Vec<&str>) -> Option<Command> {
     }
 }
 fn main() {
-    let data_storage: Arc<Mutex<HashMap<String, (String, u16, u128)>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let data_storage = Arc::new(Mutex::new(DataStorage::new()));
     let server = start_server();
     let thread_pool = threads::ThreadPool::new(THREAD_COUNT);
 
