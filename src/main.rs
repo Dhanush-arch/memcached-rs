@@ -21,7 +21,7 @@ struct GetCommand<'a> {
     key: &'a str,
 }
 
-fn start_server() -> Option<std::net::TcpStream> {
+fn start_server() -> TcpListener {
     let mut port = 11211;
     let args: Vec<String> = std::env::args().collect();
 
@@ -39,16 +39,7 @@ fn start_server() -> Option<std::net::TcpStream> {
 
     let listerner = TcpListener::bind(addr).unwrap();
 
-    match listerner.accept() {
-        Ok((sock_stream, _)) => {
-            println!("Connected: {}", sock_stream.local_addr().unwrap());
-            Some(sock_stream)
-        }
-        Err(_) => {
-            println!("Couldn't connect");
-            None
-        }
-    }
+    return listerner;
 }
 
 fn handle_connection(
@@ -64,7 +55,11 @@ fn handle_connection(
         match buf_reader.read_line(&mut command) {
             Ok(_) => {
                 let command_vec: Vec<_> = command.trim().split_ascii_whitespace().collect();
-                let processed_command = parse_command(command_vec).unwrap();
+                let processed_command: Command<'_>;
+                match parse_command(command_vec) {
+                    Some(p_command) => processed_command = p_command,
+                    None => return,
+                }
                 match processed_command {
                     Command::Get(get_command) => match data_storage.get(get_command.key) {
                         Some(data) => {
@@ -126,21 +121,22 @@ fn parse_command(command_string: Vec<&str>) -> Option<Command> {
                     data_block: "",
                 };
                 return Some(Command::Set(sc));
+            } else if str.eq_ignore_ascii_case("get") {
+                let gc = GetCommand {
+                    key: command_string.get(1).unwrap(),
+                };
+                return Some(Command::Get(gc));
             }
-            let gc = GetCommand {
-                key: command_string.get(1).unwrap(),
-            };
-            return Some(Command::Get(gc));
+            return None;
         }
         None => None,
     }
 }
 fn main() {
     let mut data_storage: HashMap<String, (String, u16, u128)> = HashMap::new();
-    match start_server() {
-        Some(sock_stream) => {
-            handle_connection(sock_stream, &mut data_storage);
-        }
-        _ => (),
+    let server = start_server();
+
+    for sock_stream in server.incoming() {
+        handle_connection(sock_stream.unwrap(), &mut data_storage);
     }
 }
