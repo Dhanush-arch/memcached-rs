@@ -3,8 +3,12 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Write},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
     sync::{Arc, Mutex},
-    thread,
 };
+
+pub mod threads;
+
+const THREAD_COUNT: usize = 2;
+
 #[derive(Debug)]
 enum Command<'a> {
     Set(SetCommand<'a>),
@@ -140,12 +144,12 @@ fn main() {
     let data_storage: Arc<Mutex<HashMap<String, (String, u16, u128)>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let server = start_server();
+    let thread_pool = threads::ThreadPool::new(THREAD_COUNT);
 
     for sock_stream in server.incoming() {
         let shared_hashmap = Arc::clone(&data_storage);
-        thread::spawn(move || {
+        thread_pool.execute(move || {
             handle_connection(sock_stream.unwrap(), shared_hashmap);
         });
     }
-    // Added basic multi-threading, TODO: threadpool implementation
 }
