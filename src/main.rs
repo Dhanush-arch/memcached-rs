@@ -2,6 +2,8 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, BufWriter, Write},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
+    sync::{Arc, Mutex},
+    thread,
 };
 #[derive(Debug)]
 enum Command<'a> {
@@ -44,7 +46,7 @@ fn start_server() -> TcpListener {
 
 fn handle_connection(
     sock_stream: TcpStream,
-    data_storage: &mut HashMap<String, (String, u16, u128)>,
+    data_storage: Arc<Mutex<HashMap<String, (String, u16, u128)>>>,
 ) {
     let mut command = String::new();
     let mut buf_reader = BufReader::new(&sock_stream);
@@ -61,26 +63,28 @@ fn handle_connection(
                     None => return,
                 }
                 match processed_command {
-                    Command::Get(get_command) => match data_storage.get(get_command.key) {
-                        Some(data) => {
-                            buf_writer
-                                .write_fmt(format_args!(
-                                    "VALUE {} {} {}\r\n",
-                                    data.0, data.1, data.2
-                                ))
-                                .unwrap();
-                            buf_writer.flush().unwrap();
+                    Command::Get(get_command) => {
+                        match data_storage.lock().unwrap().get(get_command.key) {
+                            Some(data) => {
+                                buf_writer
+                                    .write_fmt(format_args!(
+                                        "VALUE {} {} {}\r\n",
+                                        data.0, data.1, data.2
+                                    ))
+                                    .unwrap();
+                                buf_writer.flush().unwrap();
+                            }
+                            None => {
+                                buf_writer.write("END\r\n".as_bytes()).unwrap();
+                                buf_writer.flush().unwrap();
+                            }
                         }
-                        None => {
-                            buf_writer.write("END\r\n".as_bytes()).unwrap();
-                            buf_writer.flush().unwrap();
-                        }
-                    },
+                    }
                     Command::Set(mut set_command) => {
                         let mut data = String::new();
                         buf_reader.read_line(&mut data).unwrap();
                         set_command.data_block = data.as_str().trim();
-                        data_storage.insert(
+                        data_storage.lock().unwrap().insert(
                             set_command.key.to_string(),
                             (
                                 set_command.data_block.to_string(),
@@ -133,10 +137,15 @@ fn parse_command(command_string: Vec<&str>) -> Option<Command> {
     }
 }
 fn main() {
-    let mut data_storage: HashMap<String, (String, u16, u128)> = HashMap::new();
+    let data_storage: Arc<Mutex<HashMap<String, (String, u16, u128)>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let server = start_server();
 
     for sock_stream in server.incoming() {
-        handle_connection(sock_stream.unwrap(), &mut data_storage);
+        let shared_hashmap = Arc::clone(&data_storage);
+        thread::spawn(move || {
+            handle_connection(sock_stream.unwrap(), shared_hashmap);
+        });
     }
+    // Added basic multi-threading, TODO: threadpool implementation
 }
