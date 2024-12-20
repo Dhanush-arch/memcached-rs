@@ -14,6 +14,7 @@ const THREAD_COUNT: usize = 2;
 enum Command<'a> {
     Set(SetCommand<'a>),
     Get(GetCommand<'a>),
+    Add(SetCommand<'a>),
 }
 #[derive(Debug)]
 struct SetCommand<'a> {
@@ -59,7 +60,6 @@ impl Data {
                 .duration_since(self.inserted_time)
                 .unwrap()
                 .as_secs() as i128;
-            println!("{:?} {}", self.inserted_time, duration_in_sec);
             if duration_in_sec > self.expiry_sec {
                 return true;
             }
@@ -177,6 +177,37 @@ fn handle_connection(sock_stream: TcpStream, data_storage: Arc<Mutex<DataStorage
                             buf_writer.flush().unwrap();
                         }
                     }
+                    Command::Add(mut add_command) => {
+                        let mut data = String::new();
+                        buf_reader.read_line(&mut data).unwrap();
+                        add_command.data_block = data.as_str().trim();
+
+                        let value_exists = match data_storage.lock().unwrap().get(add_command.key) {
+                            Some(_) => true,
+                            None => false,
+                        };
+
+                        match value_exists {
+                            true => {
+                                buf_writer.write_all("NOT_STORED\r\n".as_bytes()).unwrap();
+                                buf_writer.flush().unwrap();
+                            }
+                            false => {
+                                data_storage.lock().unwrap().insert(
+                                    add_command.key,
+                                    Data::new(
+                                        add_command.flags,
+                                        add_command.byte_count,
+                                        add_command.data_block.to_string(),
+                                        add_command.expiry_date,
+                                    ),
+                                );
+
+                                buf_writer.write_all("STORED\r\n".as_bytes()).unwrap();
+                                buf_writer.flush().unwrap();
+                            }
+                        }
+                    }
                 }
             }
             Err(_) => {}
@@ -184,33 +215,40 @@ fn handle_connection(sock_stream: TcpStream, data_storage: Arc<Mutex<DataStorage
     }
 }
 
+fn parse_set_add_command(command: Vec<&str>) -> SetCommand {
+    SetCommand {
+        key: command.get(1).unwrap(),
+        flags: command.get(2).unwrap().parse::<u16>().unwrap(),
+        expiry_date: command.get(3).unwrap().parse::<i128>().unwrap(),
+        byte_count: command.get(4).unwrap().parse::<u128>().unwrap(),
+        no_reply: match command.get(5) {
+            Some(str) => {
+                if str.eq_ignore_ascii_case("noreply") {
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        },
+        data_block: "",
+    }
+}
+
 fn parse_command(command_string: Vec<&str>) -> Option<Command> {
     match command_string.get(0) {
         Some(str) => {
             if str.eq_ignore_ascii_case("set") {
-                let sc = SetCommand {
-                    key: command_string.get(1).unwrap(),
-                    flags: command_string.get(2).unwrap().parse::<u16>().unwrap(),
-                    byte_count: command_string.get(3).unwrap().parse::<u128>().unwrap(),
-                    expiry_date: command_string.get(4).unwrap().parse::<i128>().unwrap(),
-                    no_reply: match command_string.get(5) {
-                        Some(str) => {
-                            if str.eq_ignore_ascii_case("noreply") {
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        None => false,
-                    },
-                    data_block: "",
-                };
+                let sc = parse_set_add_command(command_string);
                 return Some(Command::Set(sc));
             } else if str.eq_ignore_ascii_case("get") {
                 let gc = GetCommand {
                     key: command_string.get(1).unwrap(),
                 };
                 return Some(Command::Get(gc));
+            } else if str.eq_ignore_ascii_case("add") {
+                let ac = parse_set_add_command(command_string);
+                return Some(Command::Add(ac));
             }
             return None;
         }
