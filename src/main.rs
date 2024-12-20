@@ -47,6 +47,25 @@ impl Data {
             expiry_sec,
         }
     }
+
+    fn is_expired(&self) -> bool {
+        if self.expiry_sec == 0 {
+            return false;
+        } else if self.expiry_sec < 0 {
+            return true;
+        } else {
+            let cur_sys_time = SystemTime::now();
+            let duration_in_sec = cur_sys_time
+                .duration_since(self.inserted_time)
+                .unwrap()
+                .as_secs() as i128;
+            println!("{:?} {}", self.inserted_time, duration_in_sec);
+            if duration_in_sec > self.expiry_sec {
+                return true;
+            }
+            return false;
+        }
+    }
 }
 
 struct DataStorage {
@@ -60,12 +79,29 @@ impl DataStorage {
         }
     }
 
-    fn get(&self, key: &str) -> Option<&Data> {
-        return self.store.get(key);
+    fn get(&mut self, key: &str) -> Option<&Data> {
+        let should_remove = {
+            if let Some(data) = self.store.get(key) {
+                data.is_expired()
+            } else {
+                false
+            }
+        };
+
+        if should_remove {
+            self.remove(key);
+            None
+        } else {
+            self.store.get(key)
+        }
     }
 
-    fn insert(&mut self, key: String, data: Data) -> Option<Data> {
-        self.store.insert(key, data)
+    fn insert(&mut self, key: &str, data: Data) -> Option<Data> {
+        self.store.insert(key.to_string(), data)
+    }
+
+    fn remove(&mut self, key: &str) -> Option<Data> {
+        self.store.remove(key)
     }
 }
 
@@ -128,7 +164,7 @@ fn handle_connection(sock_stream: TcpStream, data_storage: Arc<Mutex<DataStorage
                         buf_reader.read_line(&mut data).unwrap();
                         set_command.data_block = data.as_str().trim();
                         data_storage.lock().unwrap().insert(
-                            set_command.key.to_string(),
+                            set_command.key,
                             Data::new(
                                 set_command.flags,
                                 set_command.byte_count,
