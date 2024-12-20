@@ -12,12 +12,13 @@ const THREAD_COUNT: usize = 2;
 
 #[derive(Debug)]
 enum Command<'a> {
-    Set(SetCommand<'a>),
+    Set(SetAddCommand<'a>),
     Get(GetCommand<'a>),
-    Add(SetCommand<'a>),
+    Add(SetAddCommand<'a>),
+    Replace(SetAddCommand<'a>),
 }
 #[derive(Debug)]
-struct SetCommand<'a> {
+struct SetAddCommand<'a> {
     key: &'a str,
     flags: u16,
     byte_count: u128,
@@ -93,6 +94,13 @@ impl DataStorage {
             None
         } else {
             self.store.get(key)
+        }
+    }
+
+    fn exists(&mut self, key: &str) -> bool {
+        match self.get(key) {
+            Some(_) => true,
+            None => false,
         }
     }
 
@@ -182,10 +190,7 @@ fn handle_connection(sock_stream: TcpStream, data_storage: Arc<Mutex<DataStorage
                         buf_reader.read_line(&mut data).unwrap();
                         add_command.data_block = data.as_str().trim();
 
-                        let value_exists = match data_storage.lock().unwrap().get(add_command.key) {
-                            Some(_) => true,
-                            None => false,
-                        };
+                        let value_exists = data_storage.lock().unwrap().exists(add_command.key);
 
                         match value_exists {
                             true => {
@@ -208,6 +213,33 @@ fn handle_connection(sock_stream: TcpStream, data_storage: Arc<Mutex<DataStorage
                             }
                         }
                     }
+                    Command::Replace(mut replace_command) => {
+                        let mut data = String::new();
+                        buf_reader.read_line(&mut data).unwrap();
+                        replace_command.data_block = data.as_str().trim();
+                        let value_exists = data_storage.lock().unwrap().exists(replace_command.key);
+
+                        match value_exists {
+                            true => {
+                                data_storage.lock().unwrap().insert(
+                                    replace_command.key,
+                                    Data::new(
+                                        replace_command.flags,
+                                        replace_command.byte_count,
+                                        replace_command.data_block.to_string(),
+                                        replace_command.expiry_date,
+                                    ),
+                                );
+
+                                buf_writer.write_all("STORED\r\n".as_bytes()).unwrap();
+                                buf_writer.flush().unwrap();
+                            }
+                            false => {
+                                buf_writer.write_all("NOT_STORED\r\n".as_bytes()).unwrap();
+                                buf_writer.flush().unwrap();
+                            }
+                        }
+                    }
                 }
             }
             Err(_) => {}
@@ -215,8 +247,8 @@ fn handle_connection(sock_stream: TcpStream, data_storage: Arc<Mutex<DataStorage
     }
 }
 
-fn parse_set_add_command(command: Vec<&str>) -> SetCommand {
-    SetCommand {
+fn parse_set_add_command(command: Vec<&str>) -> SetAddCommand {
+    SetAddCommand {
         key: command.get(1).unwrap(),
         flags: command.get(2).unwrap().parse::<u16>().unwrap(),
         expiry_date: command.get(3).unwrap().parse::<i128>().unwrap(),
@@ -249,6 +281,9 @@ fn parse_command(command_string: Vec<&str>) -> Option<Command> {
             } else if str.eq_ignore_ascii_case("add") {
                 let ac = parse_set_add_command(command_string);
                 return Some(Command::Add(ac));
+            } else if str.eq_ignore_ascii_case("replace") {
+                let rc = parse_set_add_command(command_string);
+                return Some(Command::Replace(rc));
             }
             return None;
         }
