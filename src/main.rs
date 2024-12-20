@@ -16,6 +16,8 @@ enum Command<'a> {
     Get(GetCommand<'a>),
     Add(SetAddCommand<'a>),
     Replace(SetAddCommand<'a>),
+    Append(SetAddCommand<'a>),
+    Prepend(SetAddCommand<'a>),
 }
 #[derive(Debug)]
 struct SetAddCommand<'a> {
@@ -240,6 +242,78 @@ fn handle_connection(sock_stream: TcpStream, data_storage: Arc<Mutex<DataStorage
                             }
                         }
                     }
+                    Command::Append(mut append_command) => {
+                        let mut data = String::new();
+                        buf_reader.read_line(&mut data).unwrap();
+                        append_command.data_block = data.as_str().trim();
+                        let value_exists = data_storage.lock().unwrap().exists(append_command.key);
+
+                        match value_exists {
+                            true => {
+                                let mut byte_count = 0;
+                                let mut data_block = String::new();
+                                if let Some(data) =
+                                    data_storage.lock().unwrap().get(append_command.key)
+                                {
+                                    byte_count = data.byte_count;
+                                    data_block = data.data_block.clone();
+                                }
+                                data_block.push_str(append_command.data_block);
+
+                                data_storage.lock().unwrap().insert(
+                                    append_command.key,
+                                    Data::new(
+                                        append_command.flags,
+                                        append_command.byte_count + byte_count,
+                                        data_block,
+                                        append_command.expiry_date,
+                                    ),
+                                );
+                                buf_writer.write_all("STORED\r\n".as_bytes()).unwrap();
+                                buf_writer.flush().unwrap();
+                            }
+                            false => {
+                                buf_writer.write_all("NOT_STORED\r\n".as_bytes()).unwrap();
+                                buf_writer.flush().unwrap();
+                            }
+                        }
+                    }
+
+                    Command::Prepend(mut prepend_command) => {
+                        let mut data = String::new();
+                        buf_reader.read_line(&mut data).unwrap();
+                        prepend_command.data_block = data.as_str().trim();
+                        let value_exists = data_storage.lock().unwrap().exists(prepend_command.key);
+
+                        match value_exists {
+                            true => {
+                                let mut byte_count = 0;
+                                let mut data_block = prepend_command.data_block.to_string();
+                                if let Some(data) =
+                                    data_storage.lock().unwrap().get(prepend_command.key)
+                                {
+                                    byte_count = data.byte_count;
+                                    data_block.push_str(data.data_block.as_str());
+                                }
+
+                                data_storage.lock().unwrap().insert(
+                                    prepend_command.key,
+                                    Data::new(
+                                        prepend_command.flags,
+                                        prepend_command.byte_count + byte_count,
+                                        data_block,
+                                        prepend_command.expiry_date,
+                                    ),
+                                );
+                                buf_writer.write_all("STORED\r\n".as_bytes()).unwrap();
+                                buf_writer.flush().unwrap();
+                            }
+                            false => {
+                                buf_writer.write_all("NOT_STORED\r\n".as_bytes()).unwrap();
+                                buf_writer.flush().unwrap();
+                            }
+                        }
+                    }
                 }
             }
             Err(_) => {}
@@ -284,6 +358,12 @@ fn parse_command(command_string: Vec<&str>) -> Option<Command> {
             } else if str.eq_ignore_ascii_case("replace") {
                 let rc = parse_set_add_command(command_string);
                 return Some(Command::Replace(rc));
+            } else if str.eq_ignore_ascii_case("append") {
+                let ac = parse_set_add_command(command_string);
+                return Some(Command::Append(ac));
+            } else if str.eq_ignore_ascii_case("prepend") {
+                let pc = parse_set_add_command(command_string);
+                return Some(Command::Prepend(pc));
             }
             return None;
         }
